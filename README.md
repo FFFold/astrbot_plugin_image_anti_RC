@@ -27,11 +27,12 @@ AstrBot 图片发送前处理插件。插件会在图片发送前对图片做轻
 
 - `capture.process_decorating_result=true`：处理标准回复图片。
 - `capture.process_context_send=false`：不处理 `context.send_message(...)` 主动发送。
+- `capture.process_event_send=false`：不处理 `event.send(...)` 直接发送。
 - `capture.process_forward_nodes=false`：不递归处理合并转发节点内部图片。
-- `strategies.random_edge_crop=true`：启用四边随机裁剪。
-- `edge_crop_max=2`：每条边最多随机裁剪 2 像素。
-- `max_crop_ratio=0.02`：总裁剪量受图片最小边 2% 限制。
-- `skip_gif=true`：跳过 GIF，避免动图丢帧。
+- `random_edge_crop.enabled=true`：启用四边随机裁剪。
+- `random_edge_crop.edge_crop_max=2`：每条边最多随机裁剪 2 像素。
+- `random_edge_crop.max_crop_ratio=0.02`：总裁剪量受图片最小边 2% 限制。
+- `random_edge_crop.skip_gif=true`：跳过 GIF，避免动图丢帧。
 
 ## 捕获范围
 
@@ -49,18 +50,35 @@ AstrBot 图片发送前处理插件。插件会在图片发送前对图片做轻
 - `self.context.send_message(...)` 主动发送的图片。
 - 定时任务、订阅推送等使用 `context.send_message` 的主动消息。
 
+开启 `capture.process_event_send` 后，可处理：
+
+- 其他插件直接 `await event.send(...)` 发送的图片。
+- 部分媒体解析插件直接发送的图片，例如 `astrbot_plugin_media_parser`。
+
 开启 `capture.process_forward_nodes` 后，可处理：
 
 - `Node.content` 内的图片。
 - `Nodes.nodes` 内的合并转发图片。
 
-这两个选项默认关闭，因为它们覆盖范围更深，可能和其他插件或平台适配器存在兼容风险。
+这些可选项默认关闭，因为它们覆盖范围更深，可能和其他插件或平台适配器存在兼容风险。
+
+### astrbot_plugin_media_parser
+
+`astrbot_plugin_media_parser` 的图片发送主要走直接发送路径：
+
+- 普通图集会调用 `await event.send(event.chain_result(images))`。
+- 打包模式会调用 `await event.send(event.chain_result([Nodes(...)]))`。
+- 图片组件通常由 `Image.fromURL(...)` 或 `Image.fromFileSystem(...)` 构造。
+
+因此，仅开启默认的 `capture.process_decorating_result` 无法捕获它。若要处理该插件发送的图片，通常需要开启：
+
+- `capture.process_event_send=true`
+- `capture.process_forward_nodes=true`，当媒体解析插件启用打包/合并转发模式时需要。
 
 ## 无法保证捕获的发送方式
 
 以下图片可能绕过本插件：
 
-- 其他插件直接调用 `await event.send(...)` 发送的图片。
 - 其他插件直接调用平台 adapter 的 `send_by_session(...)`。
 - 其他插件直接调用协议端 API，例如 OneBot 的 `send_group_msg`、`send_private_msg`。
 - 流式输出中的图片。
@@ -92,4 +110,4 @@ Pillow>=10.0.0
 
 ## 开发状态
 
-当前版本为 `0.1.0`，只实现四边随机裁剪。后续可在 `strategies` 配置分组中继续扩展更多策略，例如重编码、轻微像素扰动、元数据处理等。
+当前版本为 `0.1.0`，只实现四边随机裁剪。后续可继续扩展更多策略，例如重编码、轻微像素扰动、元数据处理等。

@@ -10,6 +10,9 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star
 from astrbot.core.message.message_event_result import MessageChain
+from astrbot.core.platform.astr_message_event import (
+    AstrMessageEvent as CoreAstrMessageEvent,
+)
 
 try:
     from astrbot.api.message_components import Image, Node, Nodes
@@ -33,16 +36,22 @@ class ImageAntiRiskPlugin(Star):
         self.config = config
         self._original_send_message = None
         self._send_message_patched = False
+        self._original_event_sends = {}
+        self._event_send_patched = False
+        self._processing_event_send_chain_ids = set()
         self._temp_dir = Path(tempfile.gettempdir()) / PLUGIN_NAME
         self._temp_dir.mkdir(parents=True, exist_ok=True)
 
         if self._enabled() and self._process_context_send():
             self._patch_context_send_message()
+        if self._enabled() and self._process_event_send():
+            self._patch_event_send()
 
         logger.info(
             "图片反风控插件已加载："
             f"standard={self._process_decorating_result()}, "
             f"context_send={self._process_context_send()}, "
+            f"event_send={self._process_event_send()}, "
             f"forward_nodes={self._process_forward_nodes()}, "
             f"random_edge_crop={self._random_edge_crop_enabled()}"
         )
@@ -60,6 +69,7 @@ class ImageAntiRiskPlugin(Star):
 
     async def terminate(self):
         self._restore_context_send_message()
+        self._restore_event_send()
 
     def _enabled(self) -> bool:
         return bool(self.config.get("enabled", True))
@@ -68,8 +78,8 @@ class ImageAntiRiskPlugin(Star):
         value = self.config.get("capture", {})
         return value if isinstance(value, dict) else {}
 
-    def _strategies_config(self) -> dict[str, Any]:
-        value = self.config.get("strategies", {})
+    def _random_edge_crop_config(self) -> dict[str, Any]:
+        value = self.config.get("random_edge_crop", {})
         return value if isinstance(value, dict) else {}
 
     def _process_decorating_result(self) -> bool:
@@ -78,11 +88,14 @@ class ImageAntiRiskPlugin(Star):
     def _process_context_send(self) -> bool:
         return bool(self._capture_config().get("process_context_send", False))
 
+    def _process_event_send(self) -> bool:
+        return bool(self._capture_config().get("process_event_send", False))
+
     def _process_forward_nodes(self) -> bool:
         return bool(self._capture_config().get("process_forward_nodes", False))
 
     def _random_edge_crop_enabled(self) -> bool:
-        return bool(self._strategies_config().get("random_edge_crop", True))
+        return bool(self._random_edge_crop_config().get("enabled", True))
 
     def _log_detail(self) -> bool:
         return bool(self.config.get("log_detail", False))
@@ -120,6 +133,69 @@ class ImageAntiRiskPlugin(Star):
             logger.info("图片反风控：已恢复 context.send_message。")
         self._send_message_patched = False
         self._original_send_message = None
+
+    def _patch_event_send(self) -> None:
+        patched_count = 0
+        for event_class in self._event_classes_to_patch():
+            current = getattr(event_class, "send", None)
+            if current is None or getattr(current, "_image_anti_rc_owner", None) == id(
+                self
+            ):
+                continue
+
+            self._original_event_sends[event_class] = current
+
+            async def wrapped_event_send(event_self, message_chain, _original=current):
+                chain_id = id(message_chain)
+                already_processing = chain_id in self._processing_event_send_chain_ids
+                if (
+                    self._enabled()
+                    and self._process_event_send()
+                    and not already_processing
+                ):
+                    try:
+                        self._processing_event_send_chain_ids.add(chain_id)
+                        message_chain = await self._process_message_chain(message_chain)
+                        return await _original(event_self, message_chain)
+                    except Exception as exc:
+                        logger.warning(
+                            f"图片反风控：event.send 图片处理失败，使用原消息链 - {exc}"
+                        )
+                        return await _original(event_self, message_chain)
+                    finally:
+                        self._processing_event_send_chain_ids.discard(chain_id)
+                return await _original(event_self, message_chain)
+
+            setattr(wrapped_event_send, "_image_anti_rc_owner", id(self))
+            event_class.send = wrapped_event_send
+            patched_count += 1
+
+        self._event_send_patched = patched_count > 0
+        logger.info(
+            f"图片反风控：已启用 event.send 直接发送处理，patch {patched_count} 个事件类。"
+        )
+
+    def _restore_event_send(self) -> None:
+        if not self._event_send_patched or not self._original_event_sends:
+            return
+        restored_count = 0
+        for event_class, original_send in self._original_event_sends.items():
+            current = getattr(event_class, "send", None)
+            if getattr(current, "_image_anti_rc_owner", None) == id(self):
+                event_class.send = original_send
+                restored_count += 1
+        logger.info(f"图片反风控：已恢复 {restored_count} 个 event.send。")
+        self._event_send_patched = False
+        self._original_event_sends = {}
+
+    def _event_classes_to_patch(self) -> list[type]:
+        classes = []
+        stack = [CoreAstrMessageEvent]
+        while stack:
+            event_class = stack.pop()
+            classes.append(event_class)
+            stack.extend(event_class.__subclasses__())
+        return classes
 
     async def _process_message_chain(self, message_chain: MessageChain) -> MessageChain:
         if not isinstance(message_chain, MessageChain) or not message_chain.chain:
@@ -175,25 +251,26 @@ class ImageAntiRiskPlugin(Star):
             return component
 
     def _apply_random_edge_crop(self, image_bytes: bytes) -> tuple[bytes, str]:
-        edge_crop_max = int(self.config.get("edge_crop_max", 2) or 0)
+        crop_config = self._random_edge_crop_config()
+        edge_crop_max = int(crop_config.get("edge_crop_max", 2) or 0)
         if edge_crop_max <= 0:
             return image_bytes, ""
 
         with io.BytesIO(image_bytes) as input_buffer:
             with PILImage.open(input_buffer) as img:
                 fmt = (img.format or "JPEG").upper()
-                if self.config.get("skip_gif", True) and fmt == "GIF":
+                if crop_config.get("skip_gif", True) and fmt == "GIF":
                     return image_bytes, ""
                 if getattr(img, "is_animated", False):
                     return image_bytes, ""
 
                 img = ImageOps.exif_transpose(img)
                 width, height = img.size
-                min_side = int(self.config.get("min_image_side", 80) or 1)
+                min_side = int(crop_config.get("min_image_side", 80) or 1)
                 if width < min_side or height < min_side:
                     return image_bytes, ""
 
-                max_crop_ratio = float(self.config.get("max_crop_ratio", 0.02) or 0)
+                max_crop_ratio = float(crop_config.get("max_crop_ratio", 0.02) or 0)
                 max_allowed_total = int(min(width, height) * max_crop_ratio)
                 max_per_side = min(edge_crop_max, max_allowed_total // 2)
                 if max_per_side <= 0:
