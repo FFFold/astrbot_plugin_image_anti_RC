@@ -47,6 +47,30 @@
       }
     }
   },
+  "metadata_jitter": {
+    "description": "元数据扰动策略",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用元数据扰动",
+        "type": "bool",
+        "default": false,
+        "hint": "重新保存图片时写入少量随机元数据。视觉无变化，但可能被平台上传时剥离。"
+      },
+      "random_comment": {
+        "description": "写入随机注释",
+        "type": "bool",
+        "default": true,
+        "hint": "JPEG 写入 comment，PNG 写入 tEXt。WebP 会通过重新保存改变文件数据。"
+      },
+      "skip_gif": {
+        "description": "跳过 GIF 图片",
+        "type": "bool",
+        "default": true,
+        "hint": "建议保持开启，避免动图丢帧或变静态图。"
+      }
+    }
+  },
   "random_edge_crop": {
     "description": "四边随机裁剪策略",
     "type": "object",
@@ -78,6 +102,104 @@
         "min": 1,
         "max": 4096,
         "hint": "图片宽或高小于该值时跳过处理，避免小图内容损失。"
+      },
+      "skip_gif": {
+        "description": "跳过 GIF 图片",
+        "type": "bool",
+        "default": true,
+        "hint": "建议保持开启，避免动图丢帧或变静态图。"
+      }
+    }
+  },
+  "random_border": {
+    "description": "随机边框策略",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用随机边框",
+        "type": "bool",
+        "default": false,
+        "hint": "随机给图片增加极小边框，改变图片像素和尺寸。"
+      },
+      "max_border_px": {
+        "description": "最大边框像素",
+        "type": "int",
+        "default": 1,
+        "min": 1,
+        "max": 4,
+        "hint": "单次添加边框的最大像素。建议保持 1。"
+      },
+      "side": {
+        "description": "边框位置",
+        "type": "string",
+        "default": "random_one",
+        "options": ["random_one", "all"],
+        "labels": ["随机单边", "四边全部"],
+        "hint": "随机单边视觉影响更低；四边全部扰动更强。"
+      },
+      "color_mode": {
+        "description": "边框颜色模式",
+        "type": "string",
+        "default": "edge_average",
+        "options": ["edge_average", "near_edge", "transparent"],
+        "labels": ["边缘平均色", "近似边缘色", "透明色"],
+        "hint": "透明色仅对带透明通道的图片生效，其他图片会回退到边缘平均色。"
+      },
+      "min_image_side": {
+        "description": "最小处理边长",
+        "type": "int",
+        "default": 64,
+        "min": 1,
+        "max": 4096,
+        "hint": "图片宽或高小于该值时跳过处理，避免小图边框过于明显。"
+      },
+      "skip_gif": {
+        "description": "跳过 GIF 图片",
+        "type": "bool",
+        "default": true,
+        "hint": "建议保持开启，避免动图丢帧或变静态图。"
+      }
+    }
+  },
+  "pixel_jitter": {
+    "description": "极轻微像素扰动策略",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用极轻微像素扰动",
+        "type": "bool",
+        "default": false,
+        "hint": "随机修改少量像素的 RGB 通道。对哈希更有效，但对二维码、文字截图、二值图有潜在影响。"
+      },
+      "pixel_count": {
+        "description": "扰动像素数量",
+        "type": "int",
+        "default": 8,
+        "min": 1,
+        "max": 128,
+        "hint": "每张图片最多扰动的像素数量。建议 4-16。"
+      },
+      "channel_delta": {
+        "description": "通道扰动幅度",
+        "type": "int",
+        "default": 1,
+        "min": 1,
+        "max": 3,
+        "hint": "单个颜色通道最大改变量。建议保持 1。"
+      },
+      "avoid_transparent": {
+        "description": "避开透明像素",
+        "type": "bool",
+        "default": true,
+        "hint": "透明像素可能被平台清理，建议保持开启。"
+      },
+      "min_image_side": {
+        "description": "最小处理边长",
+        "type": "int",
+        "default": 64,
+        "min": 1,
+        "max": 4096,
+        "hint": "图片宽或高小于该值时跳过处理，避免小图被明显影响。"
       },
       "skip_gif": {
         "description": "跳过 GIF 图片",

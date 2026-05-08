@@ -2,6 +2,38 @@
 
 本项目遵循按版本记录主要变更的方式。由于插件仍处于早期阶段，版本号以当前发布状态为准。
 
+## 0.2.0 - 策略增强
+
+### 新增
+
+- 新增 `metadata_jitter` 元数据扰动策略。
+- 新增 `random_border` 随机边框策略。
+- 新增 `pixel_jitter` 极轻微像素扰动策略。
+- 支持用户同时开启多项策略，并按照插件内部固定顺序逐个执行。
+
+### 图片处理
+
+- 将图片处理流程调整为统一流水线，图片只打开一次，多个策略按顺序处理后统一保存。
+- `metadata_jitter` 支持 JPEG 写入随机 comment，PNG 写入随机 `tEXt` 元数据。
+- `metadata_jitter` 支持通过重新保存图片改变 WebP 文件数据。
+- `random_border` 支持随机单边或四边添加极小边框。
+- `random_border` 支持边缘平均色、近似边缘色、透明色三种边框颜色模式。
+- `pixel_jitter` 支持随机修改少量 RGB 通道值。
+- `pixel_jitter` 支持避开透明像素，降低无效扰动概率。
+
+### 配置
+
+- 新增 `metadata_jitter.enabled`、`metadata_jitter.random_comment`、`metadata_jitter.skip_gif`。
+- 新增 `random_border.enabled`、`random_border.max_border_px`、`random_border.side`、`random_border.color_mode`、`random_border.min_image_side`、`random_border.skip_gif`。
+- 新增 `pixel_jitter.enabled`、`pixel_jitter.pixel_count`、`pixel_jitter.channel_delta`、`pixel_jitter.avoid_transparent`、`pixel_jitter.min_image_side`、`pixel_jitter.skip_gif`。
+- 新增策略默认关闭，避免升级后处理强度突然增加。
+
+### 文档
+
+- 更新 README，说明四种策略的用途、执行顺序、默认配置和推荐组合。
+- 增加 `random_border` 会改变图片尺寸的说明。
+- 增加 `pixel_jitter` 对二维码、文字截图、二值图存在潜在影响的风险提示。
+
 ## 0.1.0 - 首次开发
 
 ### 新增

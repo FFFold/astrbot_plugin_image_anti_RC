@@ -1,6 +1,7 @@
 import base64
 import io
 import random
+import secrets
 import tempfile
 import uuid
 from pathlib import Path
@@ -21,10 +22,11 @@ except ImportError:  # pragma: no cover
 
 try:
     from PIL import Image as PILImage
-    from PIL import ImageOps
+    from PIL import ImageOps, PngImagePlugin
 except ImportError:  # pragma: no cover
     PILImage = None
     ImageOps = None
+    PngImagePlugin = None
 
 
 PLUGIN_NAME = "astrbot_plugin_image_anti_rc"
@@ -53,7 +55,10 @@ class ImageAntiRiskPlugin(Star):
             f"context_send={self._process_context_send()}, "
             f"event_send={self._process_event_send()}, "
             f"forward_nodes={self._process_forward_nodes()}, "
-            f"random_edge_crop={self._random_edge_crop_enabled()}"
+            f"random_edge_crop={self._random_edge_crop_enabled()}, "
+            f"metadata_jitter={self._metadata_jitter_enabled()}, "
+            f"random_border={self._random_border_enabled()}, "
+            f"pixel_jitter={self._pixel_jitter_enabled()}"
         )
 
     @filter.on_decorating_result(priority=-100)
@@ -82,6 +87,18 @@ class ImageAntiRiskPlugin(Star):
         value = self.config.get("random_edge_crop", {})
         return value if isinstance(value, dict) else {}
 
+    def _metadata_jitter_config(self) -> dict[str, Any]:
+        value = self.config.get("metadata_jitter", {})
+        return value if isinstance(value, dict) else {}
+
+    def _random_border_config(self) -> dict[str, Any]:
+        value = self.config.get("random_border", {})
+        return value if isinstance(value, dict) else {}
+
+    def _pixel_jitter_config(self) -> dict[str, Any]:
+        value = self.config.get("pixel_jitter", {})
+        return value if isinstance(value, dict) else {}
+
     def _process_decorating_result(self) -> bool:
         return bool(self._capture_config().get("process_decorating_result", True))
 
@@ -96,6 +113,15 @@ class ImageAntiRiskPlugin(Star):
 
     def _random_edge_crop_enabled(self) -> bool:
         return bool(self._random_edge_crop_config().get("enabled", True))
+
+    def _metadata_jitter_enabled(self) -> bool:
+        return bool(self._metadata_jitter_config().get("enabled", False))
+
+    def _random_border_enabled(self) -> bool:
+        return bool(self._random_border_config().get("enabled", False))
+
+    def _pixel_jitter_enabled(self) -> bool:
+        return bool(self._pixel_jitter_config().get("enabled", False))
 
     def _log_detail(self) -> bool:
         return bool(self.config.get("log_detail", False))
@@ -236,13 +262,13 @@ class ImageAntiRiskPlugin(Star):
             logger.warning("图片反风控：未安装 Pillow，跳过图片处理。")
             return component
 
-        if not self._random_edge_crop_enabled():
+        if not self._has_enabled_strategy():
             return component
 
         try:
             raw_base64 = await component.convert_to_base64()
             image_bytes = base64.b64decode(raw_base64)
-            output_bytes, output_format = self._apply_random_edge_crop(image_bytes)
+            output_bytes, output_format = self._process_image_bytes(image_bytes)
             if output_bytes is image_bytes:
                 return component
             return self._build_output_image(output_bytes, output_format)
@@ -250,55 +276,243 @@ class ImageAntiRiskPlugin(Star):
             logger.warning(f"图片反风控：图片处理失败，使用原图 - {exc}")
             return component
 
-    def _apply_random_edge_crop(self, image_bytes: bytes) -> tuple[bytes, str]:
-        crop_config = self._random_edge_crop_config()
-        edge_crop_max = int(crop_config.get("edge_crop_max", 2) or 0)
-        if edge_crop_max <= 0:
-            return image_bytes, ""
+    def _has_enabled_strategy(self) -> bool:
+        return any(
+            (
+                self._random_edge_crop_enabled(),
+                self._metadata_jitter_enabled(),
+                self._random_border_enabled(),
+                self._pixel_jitter_enabled(),
+            )
+        )
 
+    def _process_image_bytes(self, image_bytes: bytes) -> tuple[bytes, str]:
         with io.BytesIO(image_bytes) as input_buffer:
             with PILImage.open(input_buffer) as img:
                 fmt = (img.format or "JPEG").upper()
-                if crop_config.get("skip_gif", True) and fmt == "GIF":
-                    return image_bytes, ""
                 if getattr(img, "is_animated", False):
                     return image_bytes, ""
 
                 img = ImageOps.exif_transpose(img)
-                width, height = img.size
-                min_side = int(crop_config.get("min_image_side", 80) or 1)
-                if width < min_side or height < min_side:
+                applied_strategies = []
+
+                img, applied = self._apply_random_edge_crop(img, fmt)
+                if applied:
+                    applied_strategies.append("random_edge_crop")
+
+                img, applied = self._apply_random_border(img, fmt)
+                if applied:
+                    applied_strategies.append("random_border")
+
+                img, applied = self._apply_pixel_jitter(img, fmt)
+                if applied:
+                    applied_strategies.append("pixel_jitter")
+
+                metadata_jitter = self._should_apply_metadata_jitter(fmt)
+                if metadata_jitter:
+                    applied_strategies.append("metadata_jitter")
+
+                if not applied_strategies:
                     return image_bytes, ""
 
-                max_crop_ratio = float(crop_config.get("max_crop_ratio", 0.02) or 0)
-                max_allowed_total = int(min(width, height) * max_crop_ratio)
-                max_per_side = min(edge_crop_max, max_allowed_total // 2)
-                if max_per_side <= 0:
-                    return image_bytes, ""
-
-                top = random.randint(0, max_per_side)
-                bottom = random.randint(0, max_per_side)
-                left = random.randint(0, max_per_side)
-                right = random.randint(0, max_per_side)
-                if top == bottom == left == right == 0:
-                    top = 1
-
-                new_width = width - left - right
-                new_height = height - top - bottom
-                if new_width <= 10 or new_height <= 10:
-                    return image_bytes, ""
-
-                cropped = img.crop((left, top, width - right, height - bottom))
+                output_bytes, output_format = self._save_image(
+                    img, fmt, metadata_jitter
+                )
                 if self._log_detail():
                     logger.info(
-                        "图片反风控：四边随机裁剪 "
-                        f"[{width}x{height}] -> [{new_width}x{new_height}], "
-                        f"T:{top} B:{bottom} L:{left} R:{right}"
+                        "图片反风控：处理完成 "
+                        f"format={fmt}, strategies={','.join(applied_strategies)}"
                     )
-                return self._save_image(cropped, fmt)
+                return output_bytes, output_format
 
-    def _save_image(self, img: Any, fmt: str) -> tuple[bytes, str]:
+    def _apply_random_edge_crop(self, img: Any, fmt: str) -> tuple[Any, bool]:
+        if not self._random_edge_crop_enabled():
+            return img, False
+
+        crop_config = self._random_edge_crop_config()
+        edge_crop_max = int(crop_config.get("edge_crop_max", 2) or 0)
+        if edge_crop_max <= 0:
+            return img, False
+        if crop_config.get("skip_gif", True) and fmt == "GIF":
+            return img, False
+
+        width, height = img.size
+        min_side = int(crop_config.get("min_image_side", 80) or 1)
+        if width < min_side or height < min_side:
+            return img, False
+
+        max_crop_ratio = float(crop_config.get("max_crop_ratio", 0.02) or 0)
+        max_allowed_total = int(min(width, height) * max_crop_ratio)
+        max_per_side = min(edge_crop_max, max_allowed_total // 2)
+        if max_per_side <= 0:
+            return img, False
+
+        top = random.randint(0, max_per_side)
+        bottom = random.randint(0, max_per_side)
+        left = random.randint(0, max_per_side)
+        right = random.randint(0, max_per_side)
+        if top == bottom == left == right == 0:
+            top = 1
+
+        new_width = width - left - right
+        new_height = height - top - bottom
+        if new_width <= 10 or new_height <= 10:
+            return img, False
+
+        cropped = img.crop((left, top, width - right, height - bottom))
+        if self._log_detail():
+            logger.info(
+                "图片反风控：四边随机裁剪 "
+                f"[{width}x{height}] -> [{new_width}x{new_height}], "
+                f"T:{top} B:{bottom} L:{left} R:{right}"
+            )
+        return cropped, True
+
+    def _apply_random_border(self, img: Any, fmt: str) -> tuple[Any, bool]:
+        if not self._random_border_enabled():
+            return img, False
+
+        border_config = self._random_border_config()
+        if border_config.get("skip_gif", True) and fmt == "GIF":
+            return img, False
+
+        width, height = img.size
+        min_side = int(border_config.get("min_image_side", 64) or 1)
+        if width < min_side or height < min_side:
+            return img, False
+
+        max_border_px = int(border_config.get("max_border_px", 1) or 0)
+        if max_border_px <= 0:
+            return img, False
+        border_px = random.randint(1, max_border_px)
+
+        side = str(border_config.get("side", "random_one") or "random_one")
+        if side == "all":
+            border = (border_px, border_px, border_px, border_px)
+            color_side = random.choice(("left", "top", "right", "bottom"))
+        else:
+            color_side = random.choice(("left", "top", "right", "bottom"))
+            border = {
+                "left": (border_px, 0, 0, 0),
+                "top": (0, border_px, 0, 0),
+                "right": (0, 0, border_px, 0),
+                "bottom": (0, 0, 0, border_px),
+            }[color_side]
+
+        border_img = self._border_ready_image(img)
+        fill = self._border_fill_color(border_img, color_side)
+        expanded = ImageOps.expand(border_img, border=border, fill=fill)
+        if self._log_detail():
+            logger.info(
+                "图片反风控：随机边框 "
+                f"[{width}x{height}] -> [{expanded.size[0]}x{expanded.size[1]}], "
+                f"border={border}, fill={fill}"
+            )
+        return expanded, True
+
+    def _border_ready_image(self, img: Any) -> Any:
+        if img.mode == "P":
+            return img.convert("RGBA" if self._has_alpha(img) else "RGB")
+        return img
+
+    def _border_fill_color(self, img: Any, side: str) -> Any:
+        border_config = self._random_border_config()
+        color_mode = str(
+            border_config.get("color_mode", "edge_average") or "edge_average"
+        )
+        if color_mode == "transparent" and self._has_alpha(img):
+            return (0, 0, 0, 0)
+
+        rgba = img.convert("RGBA")
+        width, height = rgba.size
+        if side == "top":
+            pixels = [rgba.getpixel((x, 0)) for x in range(width)]
+        elif side == "bottom":
+            pixels = [rgba.getpixel((x, height - 1)) for x in range(width)]
+        elif side == "left":
+            pixels = [rgba.getpixel((0, y)) for y in range(height)]
+        else:
+            pixels = [rgba.getpixel((width - 1, y)) for y in range(height)]
+
+        if color_mode == "near_edge":
+            pixel = list(random.choice(pixels))
+            for index in range(3):
+                pixel[index] = self._clamp_channel(
+                    pixel[index] + random.choice((-1, 1))
+                )
+            return tuple(pixel) if self._has_alpha(img) else tuple(pixel[:3])
+
+        averaged = tuple(
+            sum(pixel[index] for pixel in pixels) // len(pixels) for index in range(4)
+        )
+        return averaged if self._has_alpha(img) else averaged[:3]
+
+    def _apply_pixel_jitter(self, img: Any, fmt: str) -> tuple[Any, bool]:
+        if not self._pixel_jitter_enabled():
+            return img, False
+
+        jitter_config = self._pixel_jitter_config()
+        if jitter_config.get("skip_gif", True) and fmt == "GIF":
+            return img, False
+
+        width, height = img.size
+        min_side = int(jitter_config.get("min_image_side", 64) or 1)
+        if width < min_side or height < min_side:
+            return img, False
+
+        pixel_count = int(jitter_config.get("pixel_count", 8) or 0)
+        channel_delta = int(jitter_config.get("channel_delta", 1) or 0)
+        if pixel_count <= 0 or channel_delta <= 0:
+            return img, False
+
+        has_alpha = self._has_alpha(img)
+        output_mode = "RGBA" if has_alpha else "RGB"
+        jittered = img.convert(output_mode)
+        pixels = jittered.load()
+        avoid_transparent = bool(jitter_config.get("avoid_transparent", True))
+        changed = 0
+        attempts = max(pixel_count * 10, 10)
+
+        for _ in range(attempts):
+            if changed >= pixel_count:
+                break
+            x = random.randrange(width)
+            y = random.randrange(height)
+            pixel = list(pixels[x, y])
+            if has_alpha and avoid_transparent and pixel[3] == 0:
+                continue
+
+            channel = random.randrange(3)
+            delta = random.randint(1, channel_delta) * random.choice((-1, 1))
+            new_value = self._clamp_channel(pixel[channel] + delta)
+            if new_value == pixel[channel]:
+                continue
+            pixel[channel] = new_value
+            pixels[x, y] = tuple(pixel)
+            changed += 1
+
+        if changed <= 0:
+            return img, False
+        if self._log_detail():
+            logger.info(
+                "图片反风控：极轻微像素扰动 "
+                f"[{width}x{height}], pixels={changed}, delta={channel_delta}"
+            )
+        return jittered, True
+
+    def _should_apply_metadata_jitter(self, fmt: str) -> bool:
+        if not self._metadata_jitter_enabled():
+            return False
+        metadata_config = self._metadata_jitter_config()
+        if metadata_config.get("skip_gif", True) and fmt == "GIF":
+            return False
+        return fmt in {"JPEG", "JPG", "PNG", "WEBP"}
+
+    def _save_image(
+        self, img: Any, fmt: str, metadata_jitter: bool = False
+    ) -> tuple[bytes, str]:
         output = io.BytesIO()
+        save_kwargs = self._metadata_save_kwargs(fmt) if metadata_jitter else {}
         if fmt in {"JPEG", "JPG"}:
             self._jpeg_ready_image(img).save(
                 output,
@@ -306,10 +520,11 @@ class ImageAntiRiskPlugin(Star):
                 quality=95,
                 optimize=True,
                 progressive=True,
+                **save_kwargs,
             )
             output_format = "JPEG"
         elif fmt == "PNG":
-            img.save(output, format="PNG", optimize=True)
+            img.save(output, format="PNG", optimize=True, **save_kwargs)
             output_format = "PNG"
         elif fmt == "WEBP":
             img.save(output, format="WEBP", quality=95, method=6)
@@ -325,6 +540,28 @@ class ImageAntiRiskPlugin(Star):
                 )
                 output_format = "JPEG"
         return output.getvalue(), output_format
+
+    def _metadata_save_kwargs(self, fmt: str) -> dict[str, Any]:
+        metadata_config = self._metadata_jitter_config()
+        if not metadata_config.get("random_comment", True):
+            return {}
+
+        token = f"iarc-{secrets.token_hex(8)}"
+        if fmt in {"JPEG", "JPG"}:
+            return {"comment": token.encode("ascii")}
+        if fmt == "PNG" and PngImagePlugin is not None:
+            pnginfo = PngImagePlugin.PngInfo()
+            pnginfo.add_text("anti_rc", token)
+            return {"pnginfo": pnginfo}
+        return {}
+
+    def _has_alpha(self, img: Any) -> bool:
+        return img.mode in {"RGBA", "LA"} or (
+            img.mode == "P" and "transparency" in getattr(img, "info", {})
+        )
+
+    def _clamp_channel(self, value: int) -> int:
+        return max(0, min(255, int(value)))
 
     def _jpeg_ready_image(self, img: Any) -> Any:
         if img.mode in {"RGBA", "LA"}:
