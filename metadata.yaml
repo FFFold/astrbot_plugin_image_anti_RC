@@ -1,10 +1,7 @@
 name: astrbot_plugin_image_anti_rc
-desc: Process outgoing images before sending to reduce hash-based blocking risk.
+display_name: 图片反风控
 version: 0.1.0
 author: Fold
-repo: ""
-display_name: 图片反风控
-short_desc: 发送图片前轻微随机处理以改变图片哈希。
-support_platforms:
-  - aiocqhttp
+repo: "https://github.com/FFFold/astrbot_plugin_image_anti_RC"
+description: 发送图片前轻微扰动处理，从而对抗平台的哈希风控。
 astrbot_version: ">=4.16,<5"
