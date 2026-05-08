@@ -1,0 +1,84 @@
+{
+  "enabled": {
+    "description": "启用插件",
+    "type": "bool",
+    "default": true
+  },
+  "capture": {
+    "description": "图片捕获范围",
+    "type": "object",
+    "items": {
+      "process_decorating_result": {
+        "description": "处理标准回复图片",
+        "type": "bool",
+        "default": true,
+        "hint": "处理通过 yield event.chain_result/image_result 等标准回复链路发送的图片。"
+      },
+      "process_context_send": {
+        "description": "处理主动发送图片",
+        "type": "bool",
+        "default": false,
+        "hint": "包装 context.send_message，在主动发送前处理图片。可覆盖定时任务、订阅推送等主动消息；默认关闭以降低兼容风险。"
+      },
+      "process_forward_nodes": {
+        "description": "处理合并转发节点内图片",
+        "type": "bool",
+        "default": false,
+        "hint": "递归处理 Node/Nodes 内部的 Image。用于合并转发消息；默认关闭以降低兼容风险。"
+      }
+    }
+  },
+  "strategies": {
+    "description": "抗风控策略",
+    "type": "object",
+    "items": {
+      "random_edge_crop": {
+        "description": "四边随机裁剪",
+        "type": "bool",
+        "default": true,
+        "hint": "每次发送图片前随机裁剪四边少量像素，以改变图片哈希。后续策略会继续添加到本分组。"
+      }
+    }
+  },
+  "edge_crop_max": {
+    "description": "四边随机裁剪最大像素",
+    "type": "int",
+    "default": 2,
+    "min": 0,
+    "max": 10,
+    "hint": "每条边随机裁剪 0~N 像素。建议 1-3。0 表示不裁剪。"
+  },
+  "max_crop_ratio": {
+    "description": "最大总裁剪比例",
+    "type": "float",
+    "default": 0.02,
+    "hint": "限制总裁剪量不超过图片最小边的该比例。默认 0.02 表示 2%。"
+  },
+  "min_image_side": {
+    "description": "最小处理边长",
+    "type": "int",
+    "default": 80,
+    "min": 1,
+    "max": 4096,
+    "hint": "图片宽或高小于该值时跳过处理，避免小图内容损失。"
+  },
+  "skip_gif": {
+    "description": "跳过 GIF 图片",
+    "type": "bool",
+    "default": true,
+    "hint": "建议保持开启，避免动图丢帧或变静态图。"
+  },
+  "output_mode": {
+    "description": "处理后图片输出方式",
+    "type": "string",
+    "default": "base64",
+    "options": ["base64", "temp_file"],
+    "labels": ["Base64", "临时文件"],
+    "hint": "aiocqhttp 推荐 base64。若平台不支持 base64，可尝试临时文件。"
+  },
+  "log_detail": {
+    "description": "输出详细日志",
+    "type": "bool",
+    "default": false
+  }
+}
