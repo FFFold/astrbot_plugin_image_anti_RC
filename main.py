@@ -321,7 +321,8 @@ class ImageAntiRiskPlugin(Star):
                 if self._log_detail():
                     logger.info(
                         "图片反风控：处理完成 "
-                        f"format={fmt}, strategies={','.join(applied_strategies)}"
+                        f"format_in={fmt}, format_out={output_format}, "
+                        f"strategies={','.join(applied_strategies)}"
                     )
                 return output_bytes, output_format
 
