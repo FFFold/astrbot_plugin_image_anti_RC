@@ -1,6 +1,6 @@
 name: astrbot_plugin_image_anti_rc
 display_name: 图片反风控
-version: 0.2.0
+version: 0.2.1
 author: Fold
 repo: "https://github.com/FFFold/astrbot_plugin_image_anti_RC"
 description: 发送图片前轻微扰动处理，从而对抗平台的哈希风控。

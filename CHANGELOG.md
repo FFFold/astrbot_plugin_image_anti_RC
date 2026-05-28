@@ -2,6 +2,20 @@
 
 本项目遵循按版本记录主要变更的方式。由于插件仍处于早期阶段，版本号以当前发布状态为准。
 
+## 0.2.1 - 代码质量与稳定性
+
+### 修复
+
+- 修复 `temp_file` 输出模式下临时文件仅在插件停止时清理、长期运行导致磁盘空间泄漏的问题，改为发送完成后立即清理。
+- 修复 `on_decorating_result` 中图片处理后直接使用同步 Pillow 调用阻塞 asyncio 事件循环的问题，改用 `asyncio.to_thread` 在线程池中执行 CPU 密集型图像处理。
+- 修复 `terminate()` 中临时文件清理存在 TOCTOU 竞态的冗余 `path.exists()` 检查。
+- 修复四处 `logger.warning` 捕获 `Exception` 时缺少 `exc_info=True`，导致异常调用栈丢失、难以调试的问题。
+
+### 测试
+
+- 修复 `_install_astrbot_stubs()` 注入 `sys.modules` 后未清理导致测试环境污染的问题，改为 `yield` fixture 自动清理。
+- 为 `sys.path.remove` 添加 `ValueError` 防护，避免 teardown 阶段异常。
+
 ## 0.2.0 - 策略增强
 
 ### 新增
