@@ -43,6 +43,7 @@ class ImageAntiRiskPlugin(Star):
         self._processing_event_send_chain_ids = set()
         self._temp_dir = Path(tempfile.gettempdir()) / PLUGIN_NAME
         self._temp_dir.mkdir(parents=True, exist_ok=True)
+        self._tracked_temp_files: set[Path] = set()
 
         if self._enabled() and self._process_context_send():
             self._patch_context_send_message()
@@ -75,6 +76,7 @@ class ImageAntiRiskPlugin(Star):
     async def terminate(self):
         self._restore_context_send_message()
         self._restore_event_send()
+        self._cleanup_temp_files()
 
     def _enabled(self) -> bool:
         return bool(self.config.get("enabled", True))
@@ -141,7 +143,8 @@ class ImageAntiRiskPlugin(Star):
                     message_chain = await self._process_message_chain(message_chain)
                 except Exception as exc:
                     logger.warning(
-                        f"图片反风控：主动发送图片处理失败，使用原消息链 - {exc}"
+                        f"图片反风控：主动发送图片处理失败，使用原消息链 - {exc}",
+                        exc_info=True,
                     )
             return await self._original_send_message(session, message_chain)
 
@@ -149,6 +152,18 @@ class ImageAntiRiskPlugin(Star):
         self.context.send_message = wrapped_send_message
         self._send_message_patched = True
         logger.info("图片反风控：已启用 context.send_message 主动发送处理。")
+
+    def _cleanup_temp_files(self) -> None:
+        cleaned = 0
+        for path in self._tracked_temp_files:
+            try:
+                path.unlink()
+                cleaned += 1
+            except OSError:
+                pass
+        self._tracked_temp_files.clear()
+        if cleaned:
+            logger.info(f"图片反风控：已清理 {cleaned} 个临时文件。")
 
     def _restore_context_send_message(self) -> None:
         if not self._send_message_patched or self._original_send_message is None:
@@ -185,7 +200,8 @@ class ImageAntiRiskPlugin(Star):
                         return await _original(event_self, message_chain)
                     except Exception as exc:
                         logger.warning(
-                            f"图片反风控：event.send 图片处理失败，使用原消息链 - {exc}"
+                            f"图片反风控：event.send 图片处理失败，使用原消息链 - {exc}",
+                            exc_info=True,
                         )
                         return await _original(event_self, message_chain)
                     finally:
@@ -235,7 +251,10 @@ class ImageAntiRiskPlugin(Star):
             try:
                 processed.append(await self._process_component(component))
             except Exception as exc:
-                logger.warning(f"图片反风控：消息段处理失败，保留原消息段 - {exc}")
+                logger.warning(
+                    f"图片反风控：消息段处理失败，保留原消息段 - {exc}",
+                    exc_info=True,
+                )
                 processed.append(component)
         return processed
 
@@ -273,7 +292,10 @@ class ImageAntiRiskPlugin(Star):
                 return component
             return self._build_output_image(output_bytes, output_format)
         except Exception as exc:
-            logger.warning(f"图片反风控：图片处理失败，使用原图 - {exc}")
+            logger.warning(
+                f"图片反风控：图片处理失败，使用原图 - {exc}",
+                exc_info=True,
+            )
             return component
 
     def _has_enabled_strategy(self) -> bool:
@@ -582,6 +604,7 @@ class ImageAntiRiskPlugin(Star):
             suffix = self._suffix_for_format(output_format)
             file_path = self._temp_dir / f"anti_rc_{uuid.uuid4().hex}{suffix}"
             file_path.write_bytes(image_bytes)
+            self._tracked_temp_files.add(file_path)
             return Image.fromFileSystem(str(file_path))
         return Image.fromBytes(image_bytes)
 
