@@ -21,7 +21,7 @@ class Config(dict):
         return super().get(key, default)
 
 
-def _install_astrbot_stubs() -> None:
+def _install_astrbot_stubs() -> list[str]:
     astrbot = types.ModuleType("astrbot")
     astrbot_api = types.ModuleType("astrbot.api")
     astrbot_api_event = types.ModuleType("astrbot.api.event")
@@ -92,15 +92,23 @@ def _install_astrbot_stubs() -> None:
         "astrbot.core.platform.astr_message_event": astrbot_core_event,
     }
     sys.modules.update(modules)
+    return list(modules.keys())
 
 
 @pytest.fixture(scope="module")
 def plugin_class():
-    _install_astrbot_stubs()
+    _installed = _install_astrbot_stubs()
     sys.path.insert(0, str(ROOT))
     from main import ImageAntiRiskPlugin
 
-    return ImageAntiRiskPlugin
+    yield ImageAntiRiskPlugin
+
+    try:
+        sys.path.remove(str(ROOT))
+    except ValueError:
+        pass
+    for mod in _installed:
+        sys.modules.pop(mod, None)
 
 
 @pytest.fixture(params=SAMPLES, ids=lambda path: path.suffix.removeprefix("."))
