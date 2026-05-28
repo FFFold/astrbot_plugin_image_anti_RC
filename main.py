@@ -426,13 +426,15 @@ class ImageAntiRiskPlugin(Star):
         rgba = img.convert("RGBA")
         width, height = rgba.size
         if side == "top":
-            pixels = [rgba.getpixel((x, 0)) for x in range(width)]
+            edge = rgba.crop((0, 0, width, 1))
         elif side == "bottom":
-            pixels = [rgba.getpixel((x, height - 1)) for x in range(width)]
+            edge = rgba.crop((0, height - 1, width, height))
         elif side == "left":
-            pixels = [rgba.getpixel((0, y)) for y in range(height)]
+            edge = rgba.crop((0, 0, 1, height))
         else:
-            pixels = [rgba.getpixel((width - 1, y)) for y in range(height)]
+            edge = rgba.crop((width - 1, 0, width, height))
+        get_pixels = getattr(edge, "get_flattened_data", edge.getdata)
+        pixels = list(get_pixels())
 
         if color_mode == "near_edge":
             pixel = list(random.choice(pixels))
@@ -471,7 +473,7 @@ class ImageAntiRiskPlugin(Star):
         pixels = jittered.load()
         avoid_transparent = bool(jitter_config.get("avoid_transparent", True))
         changed = 0
-        attempts = max(pixel_count * 10, 10)
+        attempts = min(max(pixel_count * 10, 10), width * height)
 
         for _ in range(attempts):
             if changed >= pixel_count:

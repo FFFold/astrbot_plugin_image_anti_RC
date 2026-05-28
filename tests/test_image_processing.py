@@ -261,3 +261,170 @@ def test_enabled_strategies_run_in_internal_order(plugin_class):
         "pixel_jitter",
         "metadata_jitter",
     ]
+
+
+def _make_animated_gif_bytes() -> bytes:
+    base = PILImage.new("RGBA", (48, 32), (80, 120, 160, 255))
+    frames = [base.rotate(angle, expand=False) for angle in (0, 15, 30)]
+    buf = io.BytesIO()
+    frames[0].save(
+        buf,
+        format="GIF",
+        save_all=True,
+        append_images=frames[1:],
+        loop=0,
+        duration=100,
+    )
+    return buf.getvalue()
+
+
+def test_animated_gif_skipped_when_all_strategies_enabled(plugin_class):
+    gif_bytes = _make_animated_gif_bytes()
+    plugin = _plugin(
+        plugin_class,
+        {
+            "random_edge_crop": {"enabled": True, "edge_crop_max": 2, "min_image_side": 1},
+            "metadata_jitter": {"enabled": True},
+            "random_border": {"enabled": True, "max_border_px": 1, "min_image_side": 1},
+            "pixel_jitter": {"enabled": True, "pixel_count": 4, "min_image_side": 1},
+        },
+    )
+
+    output, output_format = plugin._process_image_bytes(gif_bytes)
+
+    assert output == gif_bytes
+    assert output_format == ""
+
+
+def test_random_edge_crop_reduces_size(plugin_class):
+    plugin = _plugin(
+        plugin_class,
+        {
+            "random_edge_crop": {
+                "enabled": True,
+                "edge_crop_max": 2,
+                "max_crop_ratio": 0.1,
+                "min_image_side": 1,
+            },
+            "metadata_jitter": {"enabled": False},
+            "random_border": {"enabled": False},
+            "pixel_jitter": {"enabled": False},
+        },
+    )
+    sample = ROOT / "tests" / "test-image.png"
+    if not sample.exists():
+        pytest.skip(f"测试图片不存在：{sample}")
+    input_bytes = sample.read_bytes()
+    orig_width, orig_height = _image_size(input_bytes)
+
+    output, output_format = plugin._process_image_bytes(input_bytes)
+    new_width, new_height = _image_size(output)
+
+    assert output_format == "PNG"
+    assert new_width <= orig_width
+    assert new_height <= orig_height
+    assert new_width >= 10
+    assert new_height >= 10
+
+
+def test_random_edge_crop_edge_crop_max_zero_noop(plugin_class, sample_bytes):
+    plugin = _plugin(
+        plugin_class,
+        {
+            "random_edge_crop": {
+                "enabled": True,
+                "edge_crop_max": 0,
+                "max_crop_ratio": 0.1,
+                "min_image_side": 1,
+            },
+            "metadata_jitter": {"enabled": False},
+            "random_border": {"enabled": False},
+            "pixel_jitter": {"enabled": False},
+        },
+    )
+
+    output, output_format = plugin._process_image_bytes(sample_bytes)
+
+    assert output == sample_bytes
+    assert output_format == ""
+
+
+def test_random_edge_crop_small_image_skipped(plugin_class):
+    img = PILImage.new("RGB", (4, 4), (200, 100, 50))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    tiny_bytes = buf.getvalue()
+
+    plugin = _plugin(
+        plugin_class,
+        {
+            "random_edge_crop": {
+                "enabled": True,
+                "edge_crop_max": 10,
+                "max_crop_ratio": 0.5,
+                "min_image_side": 8,
+            },
+            "metadata_jitter": {"enabled": False},
+            "random_border": {"enabled": False},
+            "pixel_jitter": {"enabled": False},
+        },
+    )
+
+    output, output_format = plugin._process_image_bytes(tiny_bytes)
+
+    assert output == tiny_bytes
+    assert output_format == ""
+
+
+def test_pixel_jitter_avoid_transparent_true_no_change(plugin_class):
+    plugin = _plugin(
+        plugin_class,
+        {
+            "random_edge_crop": {"enabled": False},
+            "metadata_jitter": {"enabled": False},
+            "random_border": {"enabled": False},
+            "pixel_jitter": {
+                "enabled": True,
+                "pixel_count": 16,
+                "channel_delta": 2,
+                "avoid_transparent": True,
+                "min_image_side": 1,
+            },
+        },
+    )
+    img = PILImage.new("RGBA", (8, 8), (10, 20, 30, 0))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    transparent_bytes = buf.getvalue()
+
+    output, output_format = plugin._process_image_bytes(transparent_bytes)
+
+    assert output == transparent_bytes
+    assert output_format == ""
+
+
+def test_pixel_jitter_avoid_transparent_false_changes_pixels(plugin_class):
+    plugin = _plugin(
+        plugin_class,
+        {
+            "random_edge_crop": {"enabled": False},
+            "metadata_jitter": {"enabled": False},
+            "random_border": {"enabled": False},
+            "pixel_jitter": {
+                "enabled": True,
+                "pixel_count": 16,
+                "channel_delta": 2,
+                "avoid_transparent": False,
+                "min_image_side": 1,
+            },
+        },
+    )
+    img = PILImage.new("RGBA", (8, 8), (10, 20, 30, 0))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    transparent_bytes = buf.getvalue()
+
+    output, output_format = plugin._process_image_bytes(transparent_bytes)
+
+    assert output_format == "PNG"
+    assert _sha256(output) != _sha256(transparent_bytes)
