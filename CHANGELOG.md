@@ -28,11 +28,30 @@
 - 新增 `pixel_jitter.enabled`、`pixel_jitter.pixel_count`、`pixel_jitter.channel_delta`、`pixel_jitter.avoid_transparent`、`pixel_jitter.min_image_side`、`pixel_jitter.skip_gif`。
 - 新增策略默认关闭，避免升级后处理强度突然增加。
 
+### 性能
+
+- `_border_fill_color` 将 `getpixel` 循环替换为 `crop` + `getdata`/`get_flattened_data`，兼容 Pillow 10-14。
+- `pixel_jitter` 的 `attempts` 增加上限 `min(max(pixel_count * 10, 10), width * height)`，避免极端配置下的无意义迭代。
+
+### 日志
+
+- 处理完成日志同时记录输入格式和实际输出格式（`format_in`/`format_out`），便于调试格式回退。
+
+### 测试
+
+- 新增 `tests/test_image_processing.py`，使用 Pillow stub 隔离 AstrBot 运行时。
+- 新增动图测试：验证所有策略启用时动画 GIF 返回原字节。
+- 新增 `random_edge_crop` 启用状态测试：裁剪减小尺寸、`edge_crop_max=0` 不做处理、小图跳过。
+- 新增 `pixel_jitter` 透明度测试：`avoid_transparent=True` 全透明图不变、`avoid_transparent=False` 有像素变化。
+- 新增 `random_border` 尺寸变化测试。
+- 新增 `metadata_jitter` hash 变化但尺寸不变测试。
+
 ### 文档
 
 - 更新 README，说明四种策略的用途、执行顺序、默认配置和推荐组合。
 - 增加 `random_border` 会改变图片尺寸的说明。
 - 增加 `pixel_jitter` 对二维码、文字截图、二值图存在潜在影响的风险提示。
+- 重写 README，优化排版结构，使用表格、徽章、流程图提升可读性。
 
 ## 0.1.0 - 首次开发
 

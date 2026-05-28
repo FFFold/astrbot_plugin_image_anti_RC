@@ -1,215 +1,229 @@
 # 图片反风控
 
-AstrBot 图片发送前处理插件。插件会在图片发送前对图片做轻微随机处理，改变图片文件哈希，降低被平台基于哈希匹配直接阻断的概率。
+<p>
+  <a href="https://github.com/FFFold/astrbot_plugin_image_anti_RC"><img alt="GitHub Repo" src="https://img.shields.io/badge/repo-astrbot__plugin__image__anti__RC-2B579A?style=flat-square&logo=github"></a>
+  <a href="metadata.yaml"><img alt="Version" src="https://img.shields.io/badge/version-0.2.0-2ea44f?style=flat-square"></a>
+  <img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square&logo=python">
+  <img alt="AstrBot" src="https://img.shields.io/badge/AstrBot-%3E%3D4.16-FF6F00?style=flat-square">
+</p>
 
-当前内置四种处理策略：元数据扰动、四边随机裁剪、随机边框、极轻微像素扰动。用户开启多项策略时，插件会按照内部固定顺序逐个执行，不会自动挑选或随机跳过已启用策略。
+AstrBot 图片发送前处理插件。在图片发送前对其执行轻微随机处理，改变文件哈希，降低被平台基于哈希匹配阻断的概率。
+
+---
 
 ## 工作方式
 
-默认情况下，插件只处理 AstrBot 标准回复链路中的图片：
-
-- `yield event.image_result(...)`
-- `yield event.chain_result([... Image ...])`
-- 普通 LLM 或插件回复结果中的 `Image` 消息段
-
-处理流程：
-
-1. 发送前捕获消息链中的 `Image`。
-2. 读取图片字节。
-3. 使用 Pillow 打开图片。
-4. 按配置依次执行已启用的图片处理策略。
-5. 用处理后的图片替换原图片消息段。
-6. 如果处理失败，保留原图继续发送。
-
-内部策略执行顺序：
-
-1. `random_edge_crop`：四边随机裁剪。
-2. `random_border`：随机边框。
-3. `pixel_jitter`：极轻微像素扰动。
-4. `metadata_jitter`：保存时写入随机元数据或重新保存文件。
-
-## 默认配置
-
-默认只开启基础捕获能力：
-
-- `capture.process_decorating_result=true`：处理标准回复图片。
-- `capture.process_context_send=false`：不处理 `context.send_message(...)` 主动发送。
-- `capture.process_event_send=false`：不处理 `event.send(...)` 直接发送。
-- `capture.process_forward_nodes=false`：不递归处理合并转发节点内部图片。
-- `metadata_jitter.enabled=false`：默认不启用元数据扰动。
-- `random_edge_crop.enabled=true`：启用四边随机裁剪。
-- `random_edge_crop.edge_crop_max=2`：每条边最多随机裁剪 2 像素。
-- `random_edge_crop.max_crop_ratio=0.02`：总裁剪量受图片最小边 2% 限制。
-- `random_edge_crop.skip_gif=true`：跳过 GIF，避免动图丢帧。
-- `random_border.enabled=false`：默认不启用随机边框。
-- `pixel_jitter.enabled=false`：默认不启用极轻微像素扰动。
-
-## 处理策略
-
-### 元数据扰动
-
-`metadata_jitter` 会在保存图片时写入少量随机元数据，或通过重新保存改变文件数据。它不会改变图片的可见内容。
-
-适用场景：
-
-- 希望尽量不影响图片视觉效果。
-- 希望在四边裁剪之外增加一层低风险扰动。
-
-注意事项：
-
-- 平台上传图片时可能剥离元数据，因此该策略不能保证单独有效。
-- 当前保存流程不会主动保留原始 EXIF 等元数据。
-
-### 四边随机裁剪
-
-`random_edge_crop` 会随机裁掉图片上、下、左、右边缘的少量像素。这是默认启用的基础策略。
-
-注意事项：
-
-- 该策略会改变图片尺寸。
-- 对边缘内容敏感的截图、二维码、表格图片，应降低裁剪强度或关闭该策略。
-
-### 随机边框
-
-`random_border` 会给图片随机增加极小边框，改变图片像素和尺寸。
-
-适用场景：
-
-- 希望不裁掉原图内容。
-- 希望对表情包、插图类图片增加轻量扰动。
-
-注意事项：
-
-- 该策略会改变图片尺寸。
-- `color_mode=transparent` 仅对带透明通道的图片生效，普通图片会回退到边缘平均色。
-
-### 极轻微像素扰动
-
-`pixel_jitter` 会随机修改少量像素的 RGB 通道，默认每张图片最多修改 8 个像素，每个通道最大改变量为 1。
-
-适用场景：
-
-- 希望获得比元数据和边框更强的像素级扰动。
-- 图片不是二维码、精细文字截图或二值图。
-
-注意事项：
-
-- 该策略真实改变图片像素，默认关闭。
-- 对二维码、条形码、精细文字、小尺寸图片、二值图有潜在影响。
-- 建议保持 `channel_delta=1`，不要盲目提高强度。
-
-### 推荐组合
-
-低风险组合：
-
-```text
-metadata_jitter.enabled=true
-random_edge_crop.enabled=true
-random_border.enabled=false
-pixel_jitter.enabled=false
+```
+发送前捕获消息链中的 Image
+        │
+        ▼
+  读取图片字节
+        │
+        ▼
+  Pillow 打开图片
+        │
+        ▼
+  按配置依次执行处理策略
+        │
+        ▼
+  用处理后图片替换原消息段
+        │
+        ▼
+  处理失败则保留原图
 ```
 
-更强组合：
+### 内部策略执行顺序
 
-```text
-metadata_jitter.enabled=true
-random_edge_crop.enabled=true
-random_border.enabled=true
-pixel_jitter.enabled=false
+| 步骤 | 策略 | 配置键 | 默认 |
+|------|------|--------|------|
+| 1 | 四边随机裁剪 | `random_edge_crop` | ✅ 启用 |
+| 2 | 随机边框 | `random_border` | ❌ 关闭 |
+| 3 | 极轻微像素扰动 | `pixel_jitter` | ❌ 关闭 |
+| 4 | 元数据扰动 | `metadata_jitter` | ❌ 关闭 |
+
+## 快速开始
+
+### 安装
+
+将本仓库添加至 AstrBot 插件市场或手动克隆至 `data/plugins` 目录：
+
+```
+cd data/plugins
+git clone https://github.com/FFFold/astrbot_plugin_image_anti_RC
 ```
 
-强力组合：
+### 最小配置
 
-```text
-metadata_jitter.enabled=true
-random_edge_crop.enabled=true
-random_border.enabled=true
-pixel_jitter.enabled=true
+默认配置即可工作——仅启用四边随机裁剪，处理标准回复链路中的图片。
+
+## 配置
+
+### 全局
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `enabled` | bool | `true` | 启用插件 |
+| `output_mode` | string | `base64` | 处理后图片输出方式：`base64` 或 `temp_file` |
+| `log_detail` | bool | `false` | 输出详细日志（策略命中、格式变化、尺寸变化） |
+
+### 捕获范围
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `capture.process_decorating_result` | bool | `true` | 处理标准回复图片 |
+| `capture.process_context_send` | bool | `false` | 处理 `context.send_message()` 主动发送 |
+| `capture.process_event_send` | bool | `false` | 处理 `event.send()` 直接发送 |
+| `capture.process_forward_nodes` | bool | `false` | 递归处理合并转发节点内部图片 |
+
+### 四边随机裁剪 `random_edge_crop`
+
+对图片四边随机裁掉少量像素，改变图片尺寸，默认启用。
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `enabled` | bool | `true` | 是否启用 |
+| `edge_crop_max` | int | `2` | 每条边最多裁剪像素数 |
+| `max_crop_ratio` | float | `0.02` | 总裁剪量受图片最小边 2% 限制 |
+| `min_image_side` | int | `80` | 图片宽或高小于该值时跳过 |
+| `skip_gif` | bool | `true` | 跳过 GIF，避免动图丢帧 |
+
+> 对边缘内容敏感的截图、二维码、表格图片，应降低裁剪强度或关闭。
+
+### 随机边框 `random_border`
+
+给图片增加极小随机边框，改变图片尺寸和像素。
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `enabled` | bool | `false` | 是否启用 |
+| `max_border_px` | int | `1` | 最大边框像素 |
+| `side` | str | `random_one` | `random_one` / `all` |
+| `color_mode` | str | `edge_average` | `edge_average` / `near_edge` / `transparent` |
+| `min_image_side` | int | `64` | 图片宽或高小于该值时跳过 |
+| `skip_gif` | bool | `true` | 跳过 GIF |
+
+> `color_mode=transparent` 仅对带透明通道的图片生效，普通图片回退到边缘平均色。
+
+### 极轻微像素扰动 `pixel_jitter`
+
+随机修改少量像素的 RGB 通道值。
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `enabled` | bool | `false` | 是否启用 |
+| `pixel_count` | int | `8` | 最多修改像素数 |
+| `channel_delta` | int | `1` | 单通道最大改变量 |
+| `avoid_transparent` | bool | `true` | 跳过完全透明像素 |
+| `min_image_side` | int | `64` | 图片宽或高小于该值时跳过 |
+| `skip_gif` | bool | `true` | 跳过 GIF |
+
+> 对二维码、条形码、精细文字、小尺寸图片、二值图有潜在影响。建议保持 `channel_delta=1`。
+
+### 元数据扰动 `metadata_jitter`
+
+保存时写入随机元数据或重新编码，不改变可见内容。
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `enabled` | bool | `false` | 是否启用 |
+| `random_comment` | bool | `true` | 写入随机注释 |
+| `skip_gif` | bool | `true` | 跳过 GIF |
+
+> 平台上传时可能剥离元数据，单独使用该策略不能保证有效。
+
+## 推荐组合
+
+### 低风险
+
+```yaml
+metadata_jitter.enabled: true
+random_edge_crop.enabled: true
+random_border.enabled: false
+pixel_jitter.enabled: false
 ```
 
-截图、二维码、文字图建议：
+### 更强
 
-```text
-metadata_jitter.enabled=true
-random_edge_crop.enabled=false
-random_border.enabled=true
-pixel_jitter.enabled=false
+```yaml
+metadata_jitter.enabled: true
+random_edge_crop.enabled: true
+random_border.enabled: true
+pixel_jitter.enabled: false
 ```
 
-## 捕获范围
+### 强力
 
-### 默认可捕获
+```yaml
+metadata_jitter.enabled: true
+random_edge_crop.enabled: true
+random_border.enabled: true
+pixel_jitter.enabled: true
+```
 
-- 标准命令回复中的图片。
-- 插件通过 `yield event.chain_result(...)` 返回的顶层 `Image`。
-- 插件通过 `yield event.image_result(...)` 返回的图片。
-- 标准回复结果中 `Image.fromURL(...)`、`Image.fromFileSystem(...)`、`Image.fromBytes(...)` 形式的图片。
+### 截图 / 二维码 / 文字图
+
+```yaml
+metadata_jitter.enabled: true
+random_edge_crop.enabled: false
+random_border.enabled: true
+pixel_jitter.enabled: false
+```
+
+## 捕获范围说明
+
+### 默认捕获
+
+- 标准命令回复中的图片
+- 插件通过 `yield event.chain_result(...)` 返回的顶层 `Image`
+- 插件通过 `yield event.image_result(...)` 返回的图片
+- `Image.fromURL()` / `Image.fromFileSystem()` / `Image.fromBytes()` 形式的图片
 
 ### 可选捕获
 
-开启 `capture.process_context_send` 后，可处理：
+| 配置项 | 捕获内容 | 兼容风险 |
+|--------|----------|----------|
+| `capture.process_context_send` | `self.context.send_message()` 主动发送的图片，定时任务、订阅推送等 | 低 |
+| `capture.process_event_send` | 其他插件直接 `await event.send()` 发送的图片 | 中 |
+| `capture.process_forward_nodes` | `Node.content` 及 `Nodes.nodes` 内合并转发图片 | 中 |
 
-- `self.context.send_message(...)` 主动发送的图片。
-- 定时任务、订阅推送等使用 `context.send_message` 的主动消息。
+### 无法捕获的发送方式
 
-开启 `capture.process_event_send` 后，可处理：
+- 直接调用平台 adapter 的 `send_by_session()`
+- 直接调用协议端 API（如 OneBot 的 `send_group_msg`、`send_private_msg`）
+- 流式输出中的图片
+- Markdown、JSON、卡片消息、CQ 码中内嵌的图片 URL
+- 平台适配器在发送后生成的图片（如文本转图、卡片封面）
+- 已上传并以资源 ID / media ID / 缓存文件名引用的图片
+- 非 `Image` 组件但平台展示为图片的内容（文件、视频封面、音乐卡片缩略图）
 
-- 其他插件直接 `await event.send(...)` 发送的图片。
-- 部分媒体解析插件直接发送的图片，例如 `astrbot_plugin_media_parser`。
+需要真正全局捕获需 AstrBot Core 提供更底层的统一发送前 hook。
 
-开启 `capture.process_forward_nodes` 后，可处理：
+## 注意事项
 
-- `Node.content` 内的图片。
-- `Nodes.nodes` 内的合并转发图片。
+### 格式处理
 
-这些可选项默认关闭，因为它们覆盖范围更深，可能和其他插件或平台适配器存在兼容风险。
+- 动图（`is_animated=True`）始终跳过，不会被任何策略处理。
+- 各策略的 `skip_gif` 控制是否跳过静态 GIF。
+- 不支持的图片格式会自动回退为 JPEG 保存。
+- 透明图（RGBA/LA）转 JPEG 时会合成白色背景。
 
-### astrbot_plugin_media_parser
+### 风控提示
 
-`astrbot_plugin_media_parser` 的图片发送主要走直接发送路径：
+> 本插件只能改变图片文件哈希，**不能保证规避所有平台风控**。
 
-- 普通图集会调用 `await event.send(event.chain_result(images))`。
-- 打包模式会调用 `await event.send(event.chain_result([Nodes(...)]))`。
-- 图片组件通常由 `Image.fromURL(...)` 或 `Image.fromFileSystem(...)` 构造。
+长期、大量发送已被风控的图片，仍可能触发更严格的风控措施：
 
-因此，仅开启默认的 `capture.process_decorating_result` 无法捕获它。若要处理该插件发送的图片，通常需要开启：
+- 图片发送失败
+- 账号被限制发图
+- 群聊消息被限流或屏蔽
+- 机器人账号被临时或永久封禁
 
-- `capture.process_event_send=true`
-- `capture.process_forward_nodes=true`，当媒体解析插件启用打包/合并转发模式时需要。
-
-## 无法保证捕获的发送方式
-
-以下图片可能绕过本插件：
-
-- 其他插件直接调用平台 adapter 的 `send_by_session(...)`。
-- 其他插件直接调用协议端 API，例如 OneBot 的 `send_group_msg`、`send_private_msg`。
-- 流式输出中的图片。
-- Markdown、JSON、卡片消息、CQ 码文本中内嵌的图片 URL。
-- 平台适配器在发送阶段之后才生成的图片，例如某些文本转图片或卡片封面。
-- 已经上传到平台并只以资源 ID、media ID、缓存文件名引用的图片。
-- 非 `Image` 组件但平台展示为图片的内容，例如文件、视频封面、音乐或分享卡片缩略图。
-
-如果需要真正全局捕获所有 AstrBot 平台发送图片，需要 AstrBot Core 提供更底层的统一发送前 hook。插件层只能覆盖常规消息链路径。
-
-## 风险说明
-
-本插件只能改变图片文件哈希，不能保证规避所有平台风控。
-
-长期、大量发送已被平台风控的图片，仍可能触发更严格的账号、群聊或设备风控，包括但不限于：
-
-- 图片继续发送失败。
-- 账号被限制发图。
-- 群聊消息被限流或屏蔽。
-- 机器人账号被临时或永久封禁。
-
-请自行评估使用风险。建议只在合理、合法、低频的场景下使用，不要将本插件用于持续对抗平台审核或发送违规内容。
+请自行评估使用风险，在合理、合法、低频的场景下使用。
 
 ## 依赖
 
-```text
-Pillow>=10.0.0
-```
+- `Pillow>=10.0.0`
 
-## 开发状态
+## License
 
-当前版本为 `0.2.0`，已实现元数据扰动、四边随机裁剪、随机边框和极轻微像素扰动。后续可继续扩展测试命令、处理统计、资源保护和更多重编码策略。
+[MIT](LICENSE)
