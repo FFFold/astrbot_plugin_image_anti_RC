@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import io
 import random
@@ -71,7 +72,7 @@ class ImageAntiRiskPlugin(Star):
         if result is None or not result.chain:
             return
 
-        result.chain = await self._process_components(result.chain)
+        result.chain, _ = await self._process_components(result.chain)
 
     async def terminate(self):
         self._restore_context_send_message()
@@ -138,15 +139,22 @@ class ImageAntiRiskPlugin(Star):
         self._original_send_message = current
 
         async def wrapped_send_message(session, message_chain):
+            temp_files: set[Path] = set()
             if self._enabled() and self._process_context_send():
                 try:
-                    message_chain = await self._process_message_chain(message_chain)
+                    message_chain, temp_files = await self._process_message_chain(
+                        message_chain
+                    )
                 except Exception as exc:
                     logger.warning(
                         f"图片反风控：主动发送图片处理失败，使用原消息链 - {exc}",
                         exc_info=True,
                     )
-            return await self._original_send_message(session, message_chain)
+            try:
+                return await self._original_send_message(session, message_chain)
+            finally:
+                for path in temp_files:
+                    self._try_cleanup_temp_file(path)
 
         setattr(wrapped_send_message, "_image_anti_rc_owner", id(self))
         self.context.send_message = wrapped_send_message
@@ -164,6 +172,13 @@ class ImageAntiRiskPlugin(Star):
         self._tracked_temp_files.clear()
         if cleaned:
             logger.info(f"图片反风控：已清理 {cleaned} 个临时文件。")
+
+    def _try_cleanup_temp_file(self, path: Path) -> None:
+        self._tracked_temp_files.discard(path)
+        try:
+            path.unlink()
+        except OSError:
+            pass
 
     def _restore_context_send_message(self) -> None:
         if not self._send_message_patched or self._original_send_message is None:
@@ -189,6 +204,7 @@ class ImageAntiRiskPlugin(Star):
             async def wrapped_event_send(event_self, message_chain, _original=current):
                 chain_id = id(message_chain)
                 already_processing = chain_id in self._processing_event_send_chain_ids
+                temp_files: set[Path] = set()
                 if (
                     self._enabled()
                     and self._process_event_send()
@@ -196,7 +212,9 @@ class ImageAntiRiskPlugin(Star):
                 ):
                     try:
                         self._processing_event_send_chain_ids.add(chain_id)
-                        message_chain = await self._process_message_chain(message_chain)
+                        message_chain, temp_files = await self._process_message_chain(
+                            message_chain
+                        )
                         return await _original(event_self, message_chain)
                     except Exception as exc:
                         logger.warning(
@@ -206,6 +224,8 @@ class ImageAntiRiskPlugin(Star):
                         return await _original(event_self, message_chain)
                     finally:
                         self._processing_event_send_chain_ids.discard(chain_id)
+                        for path in temp_files:
+                            self._try_cleanup_temp_file(path)
                 return await _original(event_self, message_chain)
 
             setattr(wrapped_event_send, "_image_anti_rc_owner", id(self))
@@ -239,64 +259,83 @@ class ImageAntiRiskPlugin(Star):
             stack.extend(event_class.__subclasses__())
         return classes
 
-    async def _process_message_chain(self, message_chain: MessageChain) -> MessageChain:
+    async def _process_message_chain(
+        self, message_chain: MessageChain
+    ) -> tuple[MessageChain, set[Path]]:
         if not isinstance(message_chain, MessageChain) or not message_chain.chain:
-            return message_chain
-        message_chain.chain = await self._process_components(message_chain.chain)
-        return message_chain
+            return message_chain, set()
+        message_chain.chain, temp_files = await self._process_components(
+            message_chain.chain
+        )
+        return message_chain, temp_files
 
-    async def _process_components(self, components: list[Any]) -> list[Any]:
+    async def _process_components(
+        self, components: list[Any]
+    ) -> tuple[list[Any], set[Path]]:
         processed = []
+        temp_files: set[Path] = set()
         for component in components:
             try:
-                processed.append(await self._process_component(component))
+                result, files = await self._process_component(component)
+                processed.append(result)
+                temp_files |= files
             except Exception as exc:
                 logger.warning(
                     f"图片反风控：消息段处理失败，保留原消息段 - {exc}",
                     exc_info=True,
                 )
                 processed.append(component)
-        return processed
+        return processed, temp_files
 
-    async def _process_component(self, component: Any) -> Any:
+    async def _process_component(self, component: Any) -> tuple[Any, set[Path]]:
         if Image is not None and isinstance(component, Image):
             return await self._process_image_component(component)
 
         if not self._process_forward_nodes():
-            return component
+            return component, set()
 
         if Node is not None and isinstance(component, Node):
-            component.content = await self._process_components(component.content or [])
-            return component
+            component.content, temp_files = await self._process_components(
+                component.content or []
+            )
+            return component, temp_files
 
         if Nodes is not None and isinstance(component, Nodes):
+            temp_files: set[Path] = set()
             for node in component.nodes or []:
-                node.content = await self._process_components(node.content or [])
-            return component
+                node.content, files = await self._process_components(
+                    node.content or []
+                )
+                temp_files |= files
+            return component, temp_files
 
-        return component
+        return component, set()
 
-    async def _process_image_component(self, component: Any) -> Any:
+    async def _process_image_component(
+        self, component: Any
+    ) -> tuple[Any, set[Path]]:
         if PILImage is None or ImageOps is None:
             logger.warning("图片反风控：未安装 Pillow，跳过图片处理。")
-            return component
+            return component, set()
 
         if not self._has_enabled_strategy():
-            return component
+            return component, set()
 
         try:
             raw_base64 = await component.convert_to_base64()
             image_bytes = base64.b64decode(raw_base64)
-            output_bytes, output_format = self._process_image_bytes(image_bytes)
+            output_bytes, output_format = await asyncio.to_thread(
+                self._process_image_bytes, image_bytes
+            )
             if output_bytes is image_bytes:
-                return component
+                return component, set()
             return self._build_output_image(output_bytes, output_format)
         except Exception as exc:
             logger.warning(
                 f"图片反风控：图片处理失败，使用原图 - {exc}",
                 exc_info=True,
             )
-            return component
+            return component, set()
 
     def _has_enabled_strategy(self) -> bool:
         return any(
@@ -598,15 +637,17 @@ class ImageAntiRiskPlugin(Star):
             return img.convert("RGB")
         return img
 
-    def _build_output_image(self, image_bytes: bytes, output_format: str) -> Any:
+    def _build_output_image(
+        self, image_bytes: bytes, output_format: str
+    ) -> tuple[Any, set[Path]]:
         output_mode = str(self.config.get("output_mode", "base64") or "base64")
         if output_mode == "temp_file":
             suffix = self._suffix_for_format(output_format)
             file_path = self._temp_dir / f"anti_rc_{uuid.uuid4().hex}{suffix}"
             file_path.write_bytes(image_bytes)
             self._tracked_temp_files.add(file_path)
-            return Image.fromFileSystem(str(file_path))
-        return Image.fromBytes(image_bytes)
+            return Image.fromFileSystem(str(file_path)), {file_path}
+        return Image.fromBytes(image_bytes), set()
 
     def _suffix_for_format(self, output_format: str) -> str:
         return {
